@@ -1,0 +1,9 @@
+[package]
+name = "fixed_point64"
+version = "0.0.0"
+upgrade_policy = "compatible"
+
+[dependencies]
+
+[addresses]
+fixed_point64 = "0xd5375f2d4e011a4964179c43550cfe3a2d9346f27f328ef3a26a730575321f9a"
