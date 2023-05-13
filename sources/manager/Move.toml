@@ -7,5 +7,5 @@ upgrade_policy = "compatible"
 AptosFramework = { git = "https://github.com/aptos-labs/aptos-core.git", subdir = "aptos-move/framework/aptos-framework", rev = "main" }
 
 [addresses]
-thala_manager = "0x967a6d7fb6e8bfa69ac9cd63b41f19272f554d1fe65f8801a9a0d85fd2384d1b"
-thala_manager_deployer = "0xa7490a5cb71b53620587166480f70786b70740d83e9e6d2e6e2fbdc799535e83"
+thala_manager = "0x93aa044a65a27bd89b163f8b3be3777b160b09a25c336643dcc2878dfd8f2a8d"
+thala_manager_deployer = "0x1bf23f0881f8fa149500ff6b7a047f608967c028a8ad7a2100caa84833ce851d"

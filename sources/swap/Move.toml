@@ -10,5 +10,5 @@ manager = { local= "../manager" }
 swapmath = { local= "../swapmath" }
 
 [addresses]
-thalaswap_deployer = "0xccd452b1c084717efe328de35710db2fb9ee2bfcf748cb16205d3cd473df100f"
-thalaswap = "0xedc42e4b0e5cab81d5222a79c41ec33d71b0d90157fd80e0c448773b7bd7c208"
+thalaswap_deployer = "0x1bf23f0881f8fa149500ff6b7a047f608967c028a8ad7a2100caa84833ce851d"
+thalaswap = "0x48271d39d0b05bd6efca2278f22277d6fcc375504f9839fd73f74ace240861af"

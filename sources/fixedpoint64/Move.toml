@@ -6,4 +6,4 @@ upgrade_policy = "compatible"
 [dependencies]
 
 [addresses]
-fixed_point64 = "0xd5375f2d4e011a4964179c43550cfe3a2d9346f27f328ef3a26a730575321f9a"
+fixed_point64 = "0x4dcae85fc5559071906cd5c76b7420fcbb4b0a92f00ab40ffc394aadbbff5ee9"
