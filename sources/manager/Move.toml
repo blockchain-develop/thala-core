@@ -1,5 +1,5 @@
 [package]
-name = "manager"
+name = "ThalaManager"
 version = "0.0.0"
 upgrade_policy = "compatible"
 

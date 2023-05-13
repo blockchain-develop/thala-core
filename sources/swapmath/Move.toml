@@ -1,12 +1,12 @@
 [package]
-name = "swapmath"
+name = "ThalaSwapMath"
 version = "0.0.0"
 upgrade_policy = "compatible"
 
 [dependencies]
 AptosFramework = { git = "https://github.com/aptos-labs/aptos-core.git", subdir = "aptos-move/framework/aptos-framework", rev = "main" }
-fixed_point64 = { local= "../fixedpoint64" }
-manager = { local= "../manager" }
+FixedPoint64 = { local= "../fixedpoint64" }
+ThalaManager = { local= "../manager" }
 
 [addresses]
 thalaswap_math = "0xfb6e709add23c710c40e4844d889938f703719f72d2d4439ee682d67f07a15c5"

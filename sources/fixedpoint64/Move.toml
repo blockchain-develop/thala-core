@@ -1,5 +1,5 @@
 [package]
-name = "fixed_point64"
+name = "FixedPoint64"
 version = "0.0.0"
 upgrade_policy = "compatible"
 
