@@ -18,10 +18,7 @@ module thalaswap::weighted_pool_scripts {
         let coin_3 = if (!base_pool::is_null<Asset3>()) coin::withdraw<Asset3>(account, in_3) else coin::zero<Asset3>();
 
         let lp_token = weighted_pool::create_weighted_pool<Asset0, Asset1, Asset2, Asset3, Weight0, Weight1, Weight2, Weight3>(account, coin_0, coin_1, coin_2, coin_3);
-        if (!coin::is_account_registered<WeightedPoolToken<Asset0, Asset1, Asset2, Asset3, Weight0, Weight1, Weight2, Weight3>>(account_addr)) {
-            coin::register<WeightedPoolToken<Asset0, Asset1, Asset2, Asset3, Weight0, Weight1, Weight2, Weight3>>(account);
-        };
-        
+        coin::register<WeightedPoolToken<Asset0, Asset1, Asset2, Asset3, Weight0, Weight1, Weight2, Weight3>>(account);
         coin::deposit<WeightedPoolToken<Asset0, Asset1, Asset2, Asset3, Weight0, Weight1, Weight2, Weight3>>(account_addr, lp_token);
     }
 
@@ -32,7 +29,7 @@ module thalaswap::weighted_pool_scripts {
         let coin_out = weighted_pool::swap_exact_in<Asset0, Asset1, Asset2, Asset3, Weight0, Weight1, Weight2, Weight3, X, Y>(coin_in);
 
         assert!(coin::value(&coin_out) >= min_amount_out, ERR_INSUFFICIENT_OUTPUT);
-        if (!coin::is_account_registered<Y>(account_addr)) coin::register<Y>(account);
+        coin::register<Y>(account);
         coin::deposit<Y>(account_addr, coin_out);
     }
 
@@ -44,7 +41,7 @@ module thalaswap::weighted_pool_scripts {
 
         coin::deposit<X>(account_addr, refunded_coin_in);
 
-        if (!coin::is_account_registered<Y>(account_addr)) coin::register<Y>(account);
+        coin::register<Y>(account);
         coin::deposit<Y>(account_addr, coin_out);
     }
 
@@ -74,9 +71,7 @@ module thalaswap::weighted_pool_scripts {
             coin::deposit(account_addr, refunded_coin_3)
         } else coin::destroy_zero(refunded_coin_3);
 
-        if (!coin::is_account_registered<WeightedPoolToken<Asset0, Asset1, Asset2, Asset3, Weight0, Weight1, Weight2, Weight3>>(account_addr)) {
-            coin::register<WeightedPoolToken<Asset0, Asset1, Asset2, Asset3, Weight0, Weight1, Weight2, Weight3>>(account);
-        };
+        coin::register<WeightedPoolToken<Asset0, Asset1, Asset2, Asset3, Weight0, Weight1, Weight2, Weight3>>(account);
         coin::deposit<WeightedPoolToken<Asset0, Asset1, Asset2, Asset3, Weight0, Weight1, Weight2, Weight3>>(account_addr, lp_token);
     }
 

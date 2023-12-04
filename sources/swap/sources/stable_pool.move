@@ -40,24 +40,33 @@ module thalaswap::stable_pool {
     const ERR_STABLE_POOL_INVARIANT_NOT_INCREASING: u64 = 6;
     const ERR_STABLE_POOL_INSUFFICIENT_INPUT: u64 = 7;
     const ERR_STABLE_POOL_INSUFFICIENT_LIQUIDITY: u64 = 8;
+    const ERR_STABLE_POOL_LOCKED: u64 = 9;
 
     // Swap Conditions
-    const ERR_STABLE_POOL_INVALID_SWAP: u64 = 9;
+    const ERR_STABLE_POOL_INVALID_SWAP: u64 = 100;
 
     // Management
-    const ERR_STABLE_POOL_INVALID_SWAP_FEE: u64 = 9;
+    const ERR_STABLE_POOL_INVALID_SWAP_FEE: u64 = 200;
 
     // Input check
-    const ERR_STABLE_POOL_AMP_FACTOR_OUT_OF_BOUND: u64 = 10;
+    const ERR_STABLE_POOL_AMP_FACTOR_OUT_OF_BOUND: u64 = 300;
+
+    // Flashloan
+    const ERR_STABLE_POOL_FLASHLOAN_UNINITIALIZED: u64 = 400;
+    const ERR_STABLE_POOL_FLASHLOAN_INVALID_AMOUNT: u64 = 401;
+    const ERR_STABLE_POOL_FLASHLOAN_INSUFFICIENT_REPAY: u64 = 402;
+    const ERR_STABLE_POOL_FLASHLOAN_NOT_ONGOING: u64 = 403;
+    const ERR_STABLE_POOL_FLASHLOAN_INVALID_FEE: u64 = 404;
 
     // Math
-    const ERR_DIVIDE_BY_ZERO: u64 = 11;
+    const ERR_DIVIDE_BY_ZERO: u64 = 500;
 
     ///
     /// Defaults
     ///
 
     const DEFAULT_SWAP_FEE_BPS: u64 = 10;
+    const DEFAULT_FLASHLOAN_FEE_BPS: u64 = 1;
 
     ///
     /// Constants
@@ -77,6 +86,25 @@ module thalaswap::stable_pool {
 
     /// Token issued to LPs represnting fractional ownership of the pool
     struct StablePoolToken<phantom Asset0, phantom Asset1, phantom Asset2, phantom Asset3> {}
+
+    /// Flashloan resource following "hot potato" pattern: https://medium.com/@borispovod/move-hot-potato-pattern-bbc48a48d93c
+    /// This resource cannot be copied / dropped / stored, but can only be created and destroyed in the same module
+    /// by `flashloan` and `pay_flashloan` functions
+    struct Flashloan<phantom Asset0, phantom Asset1, phantom Asset2, phantom Asset3> {
+        amount_0: u64,
+        amount_1: u64,
+        amount_2: u64,
+        amount_3: u64,
+    }
+    
+    /// We use a separate global storage for flashloan related structs because we want to do a backward compatible upgrade
+    struct FlashloanHelper<phantom Asset0, phantom Asset1, phantom Asset2, phantom Asset3> has key {
+        /// true if there is a flashloan in progress, and other flashloan / swap / liquidity operations cannot be executed for the pool
+        locked: bool, 
+        /// flashloan fee in basis points
+        flashloan_fee_bps: u64,
+        flashloan_events: EventHandle<FlashloanEvent<Asset0, Asset1, Asset2, Asset3>>
+    }
 
     struct StablePool<phantom Asset0, phantom Asset1, phantom Asset2, phantom Asset3> has key {
         asset_0: Coin<Asset0>,
@@ -176,6 +204,14 @@ module thalaswap::stable_pool {
         amp_factor: u64,
     }
 
+    /// Event emitted when a flashloan is executed
+    struct FlashloanEvent<phantom Asset0, phantom Asset1, phantom Asset2, phantom Asset3> has drop, store {
+        amount_0: u64,
+        amount_1: u64,
+        amount_2: u64,
+        amount_3: u64,
+    }
+
     /// Event emitted when a protocol parameter is changed
     struct StablePoolParamChangeEvent has drop, store {
         name: String,
@@ -231,6 +267,24 @@ module thalaswap::stable_pool {
         event::emit_event<StablePoolParamChangeEvent>(
             &mut params.param_change_events,
             StablePoolParamChangeEvent { name: string::utf8(b"default_swap_fee_bps"), prev_value: prev_bps, new_value: bps }
+        );
+    }
+
+    public entry fun set_flashloan_fee_bps<Asset0, Asset1, Asset2, Asset3>(manager: &signer, bps: u64) acquires StablePoolParams, FlashloanHelper {
+        assert!(manager::is_authorized(manager), ERR_UNAUTHORIZED);
+        assert!(flashloan_helper_initialized<Asset0, Asset1, Asset2, Asset3>(), ERR_STABLE_POOL_FLASHLOAN_UNINITIALIZED);
+        assert!(bps < BPS_BASE, ERR_STABLE_POOL_FLASHLOAN_INVALID_FEE);
+
+        let resource_account_address = package::resource_account_address();
+        let flashloan_helper = borrow_global_mut<FlashloanHelper<Asset0, Asset1, Asset2, Asset3>>(resource_account_address);
+        let prev_bps = flashloan_helper.flashloan_fee_bps;
+
+        flashloan_helper.flashloan_fee_bps = bps;
+
+        let params = borrow_global_mut<StablePoolParams>(resource_account_address);
+        event::emit_event<StablePoolParamChangeEvent>(
+            &mut params.param_change_events,
+            StablePoolParamChangeEvent { name: string::utf8(b"flashloan_fee_bps"), prev_value: prev_bps, new_value: bps }
         );
     }
 
@@ -327,6 +381,12 @@ module thalaswap::stable_pool {
         update_pool_lookup(&pool, true);
         move_to(&resource_account_signer, pool);
 
+        move_to(&resource_account_signer, FlashloanHelper {
+            locked: false,
+            flashloan_fee_bps: DEFAULT_FLASHLOAN_FEE_BPS,
+            flashloan_events: account::new_event_handle<FlashloanEvent<Asset0, Asset1, Asset2, Asset3>>(&resource_account_signer)
+        });
+
         lp_coin
     }
 
@@ -369,8 +429,9 @@ module thalaswap::stable_pool {
         asset_1: Coin<Asset1>,
         asset_2: Coin<Asset2>,
         asset_3: Coin<Asset3>
-    ): Coin<StablePoolToken<Asset0, Asset1, Asset2, Asset3>> acquires StablePool, StablePoolLookup {
+    ): Coin<StablePoolToken<Asset0, Asset1, Asset2, Asset3>> acquires StablePool, StablePoolLookup, FlashloanHelper {
         assert!(initialized(), ERR_UNINITIALIZED);
+        assert!(!pool_locked<Asset0, Asset1, Asset2, Asset3>(), ERR_STABLE_POOL_LOCKED);
 
         let resource_account_address = package::resource_account_address();
         let pool = borrow_global_mut<StablePool<Asset0, Asset1, Asset2, Asset3>>(resource_account_address);
@@ -408,8 +469,9 @@ module thalaswap::stable_pool {
 
     public fun remove_liquidity<Asset0, Asset1, Asset2, Asset3>(
         lp_coin: Coin<StablePoolToken<Asset0, Asset1, Asset2, Asset3>>
-    ): (Coin<Asset0>, Coin<Asset1>, Coin<Asset2>, Coin<Asset3>) acquires StablePool, StablePoolLookup {
+    ): (Coin<Asset0>, Coin<Asset1>, Coin<Asset2>, Coin<Asset3>) acquires StablePool, StablePoolLookup, FlashloanHelper {
         assert!(initialized(), ERR_UNINITIALIZED);
+        assert!(!pool_locked<Asset0, Asset1, Asset2, Asset3>(), ERR_STABLE_POOL_LOCKED);
 
         let resource_account_address = package::resource_account_address();
         let pool = borrow_global_mut<StablePool<Asset0, Asset1, Asset2, Asset3>>(resource_account_address);
@@ -440,8 +502,9 @@ module thalaswap::stable_pool {
         (out_0, out_1, out_2, out_3)
     }
 
-    public fun swap_exact_in<Asset0, Asset1, Asset2, Asset3, X, Y>(coin_in: Coin<X>): Coin<Y> acquires StablePool, StablePoolLookup {
+    public fun swap_exact_in<Asset0, Asset1, Asset2, Asset3, X, Y>(coin_in: Coin<X>): Coin<Y> acquires StablePool, StablePoolLookup, FlashloanHelper {
         assert!(initialized(), ERR_UNINITIALIZED);
+        assert!(!pool_locked<Asset0, Asset1, Asset2, Asset3>(), ERR_STABLE_POOL_LOCKED);
 
         // Ensure Input
         let amount_in = coin::value(&coin_in);
@@ -454,11 +517,16 @@ module thalaswap::stable_pool {
         let typeof_y = type_info::type_of<Y>();
         assert!(typeof_x != typeof_y && !base_pool::is_null<X>() && !base_pool::is_null<Y>(), ERR_STABLE_POOL_INVALID_SWAP);
 
-        let (is_in_0, is_in_1, is_in_2, is_in_3) = (typeof_x == type_info::type_of<Asset0>(), typeof_x == type_info::type_of<Asset1>(), typeof_x == type_info::type_of<Asset2>(), typeof_x == type_info::type_of<Asset3>());
-        assert!(is_in_0 || is_in_1 || is_in_2 || is_in_3, ERR_STABLE_POOL_INVALID_SWAP);
+        let typeof_0 = type_info::type_of<Asset0>();
+        let typeof_1 = type_info::type_of<Asset1>();
+        let typeof_2 = type_info::type_of<Asset2>();
+        let typeof_3 = type_info::type_of<Asset3>();
 
-        let (is_out_0, is_out_1, is_out_2, is_out_3) = (typeof_y == type_info::type_of<Asset0>(), typeof_y == type_info::type_of<Asset1>(), typeof_y == type_info::type_of<Asset2>(), typeof_y == type_info::type_of<Asset3>());
-        assert!(is_out_0 || is_out_1 || is_out_2 || is_out_3, ERR_STABLE_POOL_INVALID_SWAP);
+        let (is_in_0, is_in_1, is_in_2, is_in_3) = (typeof_x == typeof_0, typeof_x == typeof_1, typeof_x == typeof_2, typeof_x == typeof_3);
+        let (is_out_0, is_out_1, is_out_2, is_out_3) = (typeof_y == typeof_0, typeof_y == typeof_1, typeof_y == typeof_2, typeof_y == typeof_3);
+
+        let idx_in = if (is_in_0) 0 else if (is_in_1) 1 else if (is_in_2) 2 else if (is_in_3) 3 else { abort ERR_STABLE_POOL_INVALID_SWAP };
+        let idx_out = if (is_out_0) 0 else if (is_out_1) 1 else if (is_out_2) 2 else if (is_out_3) 3 else { abort ERR_STABLE_POOL_INVALID_SWAP };
 
         // Compute fee allocation & adjust the input that is swapped as a result
         let total_fee_amount = fixed_point64::decode(fixed_point64::mul(pool.swap_fee_ratio, amount_in));
@@ -469,8 +537,6 @@ module thalaswap::stable_pool {
         fees::absorb_fee(coin::extract(&mut coin_in, protocol_fee_amount));
 
         // Compute Swap Output
-        let idx_in = if (is_in_0) 0 else if (is_in_1) 1 else if (is_in_2) 2 else 3;
-        let idx_out = if (is_out_0) 0 else if (is_out_1) 1 else if (is_out_2) 2 else 3;
         let xp = &get_xp(pool);
         let calc_in = amount_in_post_fee * *vector::borrow(&pool.precision_multipliers, idx_in);
         let calc_out = stable_math::calc_out_given_in(pool.amp_factor, idx_in, idx_out, calc_in, xp);
@@ -504,8 +570,9 @@ module thalaswap::stable_pool {
     // Swap with exact amount out
     // X is input coin, Y is output coin
     // Returns extra amount of coin X refunded, and output coin Y
-    public fun swap_exact_out<Asset0, Asset1, Asset2, Asset3, X, Y>(coin_in: Coin<X>, amount_out: u64): (Coin<X>, Coin<Y>) acquires StablePool, StablePoolLookup {
+    public fun swap_exact_out<Asset0, Asset1, Asset2, Asset3, X, Y>(coin_in: Coin<X>, amount_out: u64): (Coin<X>, Coin<Y>) acquires StablePool, StablePoolLookup, FlashloanHelper {
         assert!(initialized(), ERR_UNINITIALIZED);
+        assert!(!pool_locked<Asset0, Asset1, Asset2, Asset3>(), ERR_STABLE_POOL_LOCKED);
         let provided_amount_in = coin::value(&coin_in);
 
         assert!(amount_out > 0, ERR_STABLE_POOL_INVALID_SWAP);
@@ -518,21 +585,25 @@ module thalaswap::stable_pool {
         let typeof_y = type_info::type_of<Y>();
         assert!(typeof_x != typeof_y && !base_pool::is_null<X>() && !base_pool::is_null<Y>(), ERR_STABLE_POOL_INVALID_SWAP);
 
-        let (is_in_0, is_in_1, is_in_2, is_in_3) = (typeof_x == type_info::type_of<Asset0>(), typeof_x == type_info::type_of<Asset1>(), typeof_x == type_info::type_of<Asset2>(), typeof_x == type_info::type_of<Asset3>());
-        assert!(is_in_0 || is_in_1 || is_in_2 || is_in_3, ERR_STABLE_POOL_INVALID_SWAP);
+        let typeof_0 = type_info::type_of<Asset0>();
+        let typeof_1 = type_info::type_of<Asset1>();
+        let typeof_2 = type_info::type_of<Asset2>();
+        let typeof_3 = type_info::type_of<Asset3>();
 
-        let (is_out_0, is_out_1, is_out_2, is_out_3) = (typeof_y == type_info::type_of<Asset0>(), typeof_y == type_info::type_of<Asset1>(), typeof_y == type_info::type_of<Asset2>(), typeof_y == type_info::type_of<Asset3>());
-        assert!(is_out_0 || is_out_1 || is_out_2 || is_out_3, ERR_STABLE_POOL_INVALID_SWAP);
+        let (is_in_0, is_in_1, is_in_2, is_in_3) = (typeof_x == typeof_0, typeof_x == typeof_1, typeof_x == typeof_2, typeof_x == typeof_3);
+        let (is_out_0, is_out_1, is_out_2, is_out_3) = (typeof_y == typeof_0, typeof_y == typeof_1, typeof_y == typeof_2, typeof_y == typeof_3);
         
-        let idx_in = if (is_in_0) 0 else if (is_in_1) 1 else if (is_in_2) 2 else 3;
+        let idx_in = if (is_in_0) 0 else if (is_in_1) 1 else if (is_in_2) 2 else if (is_in_3) 3 else { abort ERR_STABLE_POOL_INVALID_SWAP };
         let (idx_out, pool_balance_out) = if (is_out_0) {
             (0, coin::value(&pool.asset_0))
         } else if (is_out_1) {
             (1, coin::value(&pool.asset_1))
         } else if (is_out_2) { 
             (2, coin::value(&pool.asset_2))
-        } else {
+        } else if (is_out_3) {
             (3, coin::value(&pool.asset_3))
+        } else {
+            abort ERR_STABLE_POOL_INVALID_SWAP
         };
 
         // Ensure Liquidity & Input. Asset in the pool must have enough balance for the swap
@@ -578,6 +649,123 @@ module thalaswap::stable_pool {
         update_pool_lookup(pool, false);
 
         (coin_in, coin_out)
+    }
+
+    /// Get flash loan coins.
+    /// We allow borrowing any assets
+    /// Returns loan coins along with Flashloan resource
+    public fun flashloan<Asset0, Asset1, Asset2, Asset3>(
+        amount_0: u64, 
+        amount_1: u64, 
+        amount_2: u64, 
+        amount_3: u64
+    ): (Coin<Asset0>, Coin<Asset1>, Coin<Asset2>, Coin<Asset3>, Flashloan<Asset0, Asset1, Asset2, Asset3>)
+    acquires StablePool, FlashloanHelper {
+        assert!(initialized(), ERR_UNINITIALIZED);
+        assert!(!pool_locked<Asset0, Asset1, Asset2, Asset3>(), ERR_STABLE_POOL_LOCKED);
+
+        assert!(amount_0 > 0 || amount_1 > 0 || amount_2 > 0 || amount_3 > 0, ERR_STABLE_POOL_FLASHLOAN_INVALID_AMOUNT);
+
+        let resource_account_address = package::resource_account_address();
+        let pool = borrow_global_mut<StablePool<Asset0, Asset1, Asset2, Asset3>>(resource_account_address);
+
+        assert!(amount_0 <= coin::value(&pool.asset_0), ERR_STABLE_POOL_FLASHLOAN_INVALID_AMOUNT);
+        assert!(amount_1 <= coin::value(&pool.asset_1), ERR_STABLE_POOL_FLASHLOAN_INVALID_AMOUNT);
+        assert!(amount_2 <= coin::value(&pool.asset_2), ERR_STABLE_POOL_FLASHLOAN_INVALID_AMOUNT);
+        assert!(amount_3 <= coin::value(&pool.asset_3), ERR_STABLE_POOL_FLASHLOAN_INVALID_AMOUNT);
+
+        // Withdraw expected amount from reserves.
+        let loan_0 = coin::extract(&mut pool.asset_0, amount_0);
+        let loan_1 = coin::extract(&mut pool.asset_1, amount_1);
+        let loan_2 = coin::extract(&mut pool.asset_2, amount_2);
+        let loan_3 = coin::extract(&mut pool.asset_3, amount_3);
+
+        // The pool will be locked after the loan until payment.
+        if (flashloan_helper_initialized<Asset0, Asset1, Asset2, Asset3>()) {
+            let flashloan_helper = borrow_global_mut<FlashloanHelper<Asset0, Asset1, Asset2, Asset3>>(resource_account_address);
+            flashloan_helper.locked = true;
+        }
+        else {
+            // Create Flashloan helper resource if it doesn't exist.
+            let resource_account_signer = &package::resource_account_signer();
+            move_to(resource_account_signer, FlashloanHelper<Asset0, Asset1, Asset2, Asset3> {
+                locked: true,
+                flashloan_fee_bps: DEFAULT_FLASHLOAN_FEE_BPS,
+                flashloan_events: account::new_event_handle<FlashloanEvent<Asset0, Asset1, Asset2, Asset3>>(resource_account_signer),
+            });
+        };
+
+        (loan_0, loan_1, loan_2, loan_3, Flashloan<Asset0, Asset1, Asset2, Asset3> { amount_0, amount_1, amount_2, amount_3 })
+    }
+
+    /// Pay flash loan coins and destroy the Flashloan resource.
+    /// User must pay back the loan coins plus the fee.
+    public fun pay_flashloan<Asset0, Asset1, Asset2, Asset3>(
+        coin_0: Coin<Asset0>, 
+        coin_1: Coin<Asset1>,
+        coin_2: Coin<Asset2>,
+        coin_3: Coin<Asset3>,
+        loan: Flashloan<Asset0, Asset1, Asset2, Asset3>
+    )
+    acquires StablePool, FlashloanHelper {
+        assert!(initialized(), ERR_UNINITIALIZED);
+        assert!(pool_locked<Asset0, Asset1, Asset2, Asset3>(), ERR_STABLE_POOL_FLASHLOAN_NOT_ONGOING);
+
+        let resource_account_address = package::resource_account_address();
+        let flashloan_helper = borrow_global_mut<FlashloanHelper<Asset0, Asset1, Asset2, Asset3>>(resource_account_address);
+
+        let Flashloan { amount_0, amount_1, amount_2, amount_3 } = loan;
+
+        let repay_amount_0 = coin::value(&coin_0);
+        let repay_amount_1 = coin::value(&coin_1);
+        let repay_amount_2 = coin::value(&coin_2);
+        let repay_amount_3 = coin::value(&coin_3);
+
+        let flashloan_fee_bps = flashloan_helper.flashloan_fee_bps;
+        // It's certain that at least one of the loan amounts is non-zero.
+        if (amount_0 > 0) {
+            let fee_amount = math64::mul_div(amount_0, flashloan_fee_bps, BPS_BASE);
+            assert!(repay_amount_0 >= amount_0 + fee_amount, ERR_STABLE_POOL_FLASHLOAN_INSUFFICIENT_REPAY);
+            fees::absorb_fee(coin::extract(&mut coin_0, fee_amount));
+        };
+
+        if (amount_1 > 0) {
+            let fee_amount = math64::mul_div(amount_1, flashloan_fee_bps, BPS_BASE);
+            assert!(repay_amount_1 >= amount_1 + fee_amount, ERR_STABLE_POOL_FLASHLOAN_INSUFFICIENT_REPAY);
+            fees::absorb_fee(coin::extract(&mut coin_1, fee_amount));
+        };
+
+        if (amount_2 > 0) {
+            let fee_amount = math64::mul_div(amount_2, flashloan_fee_bps, BPS_BASE);
+            assert!(repay_amount_2 >= amount_2 + fee_amount, ERR_STABLE_POOL_FLASHLOAN_INSUFFICIENT_REPAY);
+            fees::absorb_fee(coin::extract(&mut coin_2, fee_amount));
+        };
+
+        if (amount_3 > 0) {
+            let fee_amount = math64::mul_div(amount_3, flashloan_fee_bps, BPS_BASE);
+            assert!(repay_amount_3 >= amount_3 + fee_amount, ERR_STABLE_POOL_FLASHLOAN_INSUFFICIENT_REPAY);
+            fees::absorb_fee(coin::extract(&mut coin_3, fee_amount));
+        };
+
+        let pool = borrow_global_mut<StablePool<Asset0, Asset1, Asset2, Asset3>>(resource_account_address);
+
+        // Deposit remaining repayed coins to liquidity pool.
+        coin::merge(&mut pool.asset_0, coin_0);
+        coin::merge(&mut pool.asset_1, coin_1);
+        coin::merge(&mut pool.asset_2, coin_2);
+        coin::merge(&mut pool.asset_3, coin_3);
+
+        // The pool will be unlocked after payment.
+        flashloan_helper.locked = false;
+
+        event::emit_event(
+            &mut flashloan_helper.flashloan_events,
+            FlashloanEvent<Asset0, Asset1, Asset2, Asset3> {
+                amount_0,
+                amount_1,
+                amount_2,
+                amount_3,
+            });
     }
 
     // Public Getters
@@ -658,6 +846,25 @@ module thalaswap::stable_pool {
         };
 
         precision_multipliers
+    }
+
+    #[view]
+    public fun swap_fee_ratio<Asset0, Asset1, Asset2, Asset3>(): FixedPoint64 acquires StablePool {
+        let pool = borrow_global<StablePool<Asset0, Asset1, Asset2, Asset3>>(package::resource_account_address());
+        pool.swap_fee_ratio
+    }
+
+    #[view]
+    public fun inverse_negated_swap_fee_ratio<Asset0, Asset1, Asset2, Asset3>(): FixedPoint64 acquires StablePool {
+        let pool = borrow_global<StablePool<Asset0, Asset1, Asset2, Asset3>>(package::resource_account_address());
+        pool.inverse_negated_swap_fee_ratio
+    }
+
+    #[view]
+    public fun flashloan_fee_bps<Asset0, Asset1, Asset2, Asset3>(): u64 acquires FlashloanHelper {
+        assert!(flashloan_helper_initialized<Asset0, Asset1, Asset2, Asset3>(), ERR_STABLE_POOL_FLASHLOAN_UNINITIALIZED);
+        let flashloan_helper = borrow_global<FlashloanHelper<Asset0, Asset1, Asset2, Asset3>>(package::resource_account_address());
+        flashloan_helper.flashloan_fee_bps
     }
 
     // Internal Helpers
@@ -774,6 +981,18 @@ module thalaswap::stable_pool {
         };
 
         xp
+    }
+
+    fun flashloan_helper_initialized<Asset0, Asset1, Asset2, Asset3>(): bool {
+        exists<FlashloanHelper<Asset0, Asset1, Asset2, Asset3>>(package::resource_account_address())
+    }
+
+    fun pool_locked<Asset0, Asset1, Asset2, Asset3>(): bool acquires FlashloanHelper {
+        if (!flashloan_helper_initialized<Asset0, Asset1, Asset2, Asset3>()) {
+            return false
+        };
+        let helper = borrow_global<FlashloanHelper<Asset0, Asset1, Asset2, Asset3>>(package::resource_account_address());
+        helper.locked
     }
 
     #[test_only]

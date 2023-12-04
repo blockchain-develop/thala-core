@@ -27,4 +27,12 @@ module thalaswap::init {
         stable_pool::initialize();
         weighted_pool::initialize();
     }
+
+    #[test_only]
+    public fun initialize_for_test() {
+        package::init_for_test();
+
+        let deployer = aptos_framework::account::create_signer_for_test(@thalaswap_deployer);
+        initialize(&deployer);
+    }
 }

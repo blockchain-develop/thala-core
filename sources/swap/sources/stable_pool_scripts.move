@@ -17,10 +17,7 @@ module thalaswap::stable_pool_scripts {
         let coin_3 = if (!base_pool::is_null<Asset3>()) coin::withdraw<Asset3>(account, in_3) else coin::zero<Asset3>();
 
         let lp_token = stable_pool::create_stable_pool<Asset0, Asset1, Asset2, Asset3>(account, coin_0, coin_1, coin_2, coin_3, amplification_factor);
-        if (!coin::is_account_registered<StablePoolToken<Asset0, Asset1, Asset2, Asset3>>(account_addr)) {
-            coin::register<StablePoolToken<Asset0, Asset1, Asset2, Asset3>>(account);
-        };
-        
+        coin::register<StablePoolToken<Asset0, Asset1, Asset2, Asset3>>(account);
         coin::deposit<StablePoolToken<Asset0, Asset1, Asset2, Asset3>>(account_addr, lp_token);
     }
 
@@ -32,7 +29,7 @@ module thalaswap::stable_pool_scripts {
 
         assert!(coin::value(&coin_out) >= min_amount_out, ERR_INSUFFICIENT_OUTPUT);
 
-        if (!coin::is_account_registered<Y>(account_addr)) coin::register<Y>(account);
+        coin::register<Y>(account);
         coin::deposit<Y>(account_addr, coin_out);
     }
 
@@ -44,7 +41,7 @@ module thalaswap::stable_pool_scripts {
 
         coin::deposit<X>(account_addr, refunded_coin_in);
 
-        if (!coin::is_account_registered<Y>(account_addr)) coin::register<Y>(account);
+        coin::register<Y>(account);
         coin::deposit<Y>(account_addr, coin_out);
     }
 
@@ -57,10 +54,7 @@ module thalaswap::stable_pool_scripts {
         let coin_3 = if (!base_pool::is_null<Asset3>()) coin::withdraw<Asset3>(account, in_3) else coin::zero<Asset3>();
 
         let lp_token = stable_pool::add_liquidity<Asset0, Asset1, Asset2, Asset3>(coin_0, coin_1, coin_2, coin_3);
-        if (!coin::is_account_registered<StablePoolToken<Asset0, Asset1, Asset2, Asset3>>(account_addr)) {
-            coin::register<StablePoolToken<Asset0, Asset1, Asset2, Asset3>>(account);
-        };
-
+        coin::register<StablePoolToken<Asset0, Asset1, Asset2, Asset3>>(account);
         coin::deposit<StablePoolToken<Asset0, Asset1, Asset2, Asset3>>(account_addr, lp_token);
     }
 
