@@ -82,6 +82,12 @@ module thalaswap::package {
         account::create_signer_with_capability(signer_cap)
     }
 
+    /// Entrypoint ThalaManager to retrieve signer. Allows the ThalaManager to execute actions on behalf of this resource account
+    public fun request_signer(account: &signer): signer acquires ResourceSignerCapability {
+        assert!(thala_manager::manager::is_authorized(account), ERR_PACKAGE_UNAUTHORIZED);
+        resource_account_signer()
+    }
+
     /// Entry point to publishing new or upgrading modules AFTER initialization, gated by the ThalaManager
     public entry fun publish_package(account: &signer, metadata_serialized: vector<u8>, code: vector<vector<u8>>) acquires ResourceSignerCapability {
         assert!(thala_manager::manager::is_authorized(account), ERR_PACKAGE_UNAUTHORIZED);
@@ -146,5 +152,25 @@ module thalaswap::package {
 
         let non_manager = account::create_account_for_test(@0xA);
         publish_package(&non_manager, std::vector::empty(), std::vector::empty());
+    }
+
+    #[test(thalaswap = @thalaswap)]
+    #[expected_failure(abort_code = ERR_PACKAGE_UNAUTHORIZED)]
+    fun request_signer_unauthorized_err(thalaswap: &signer) acquires ResourceSignerCapability {
+        // setup the manager & package resource
+        thala_manager::manager::initialize_for_test(signer::address_of(thalaswap));
+        init_for_test();
+
+        let non_manager = account::create_account_for_test(@0xA);
+        request_signer(&non_manager);
+    }
+
+    #[test(thalaswap = @thalaswap)]
+    fun request_signer_ok(thalaswap: &signer) acquires ResourceSignerCapability {
+        // setup the manager & package resource
+        thala_manager::manager::initialize_for_test(signer::address_of(thalaswap));
+        init_for_test();
+
+        let _ = request_signer(thalaswap);
     }
 }

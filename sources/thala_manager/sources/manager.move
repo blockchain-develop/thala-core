@@ -1,8 +1,12 @@
 module thala_manager::manager {
+    use std::option::{Self, Option};
     use std::signer;
+    use std::vector;
 
     use aptos_framework::account;
+    use aptos_framework::object;
     use aptos_std::event::{Self, EventHandle};
+    use aptos_std::smart_vector::{Self, SmartVector};
 
     use thala_manager::package;
 
@@ -17,12 +21,32 @@ module thala_manager::manager {
     const ERR_MANAGER_UNINITIALIZED: u64 = 1;
     const ERR_MANAGER_INITIALIZED: u64 = 2;
 
+    // Business logic
     const ERR_MANAGER_INVALID_MANAGER_ADDRESS: u64 = 3;
     const ERR_MANAGER_NO_MANAGER_CHANGE_PROPOSAL: u64 = 4;
+    const ERR_MANAGER_ROLE_EXISTS: u64 = 5;
+    const ERR_MANAGER_ROLE_NOT_EXISTS: u64 = 6;
+    const ERR_MANAGER_ROLE_ADMIN_NOT_EXISTS: u64 = 7;
 
     struct Manager has key {
         manager_address: address,
         events: ManagerEvents
+    }
+
+    #[resource_group_member(group = aptos_framework::object::ObjectGroup)]
+    /// Deprecated after August 2023 upgrade. Use RoleV2 instead
+    struct Role has key {
+        admin: Option<address>,
+        members: vector<address>
+    }
+
+    #[resource_group_member(group = aptos_framework::object::ObjectGroup)]
+    struct RoleV2 has key {
+        /// role admin has the ability to set role members
+        /// Thala protocol manager can assign admin to any address
+        /// Thala protocol manager can also set any role members
+        admin: Option<address>,
+        members: SmartVector<address>
     }
 
     struct ManagerChangeProposal has key, drop {
@@ -137,6 +161,65 @@ module thala_manager::manager {
             new_manager: account_addr
         });
     }
+    
+    ///
+    /// Role Management
+    ///
+    
+    /// Protocol manager can create a new role
+    public entry fun create_role(manager: &signer, role_name: vector<u8>, admin: Option<address>) acquires Manager {
+        assert!(is_authorized(manager), ERR_UNAUTHORIZED);
+        assert!(!exists<RoleV2>(role_object_address(role_name)), ERR_MANAGER_ROLE_EXISTS);
+        let resource_account_signer = package::resource_account_signer();
+        let constructor_ref = object::create_named_object(&resource_account_signer, role_name_v2(role_name));
+        let role_signer = object::generate_signer(&constructor_ref);
+        move_to(&role_signer, RoleV2 {
+            admin,
+            members: smart_vector::empty<address>()
+        });
+    }
+
+    /// Protocol manager can set role admin address or remove admin by setting an empty Option
+    public entry fun set_role_admin(manager: &signer, role_name: vector<u8>, admin: Option<address>) acquires Manager, RoleV2 {
+        assert!(is_authorized(manager), ERR_UNAUTHORIZED);
+        let role_object_address = role_object_address(role_name);
+        assert!(exists<RoleV2>(role_object_address), ERR_MANAGER_ROLE_NOT_EXISTS);
+        let role = borrow_global_mut<RoleV2>(role_object_address);
+        role.admin = admin;
+    } 
+
+    /// Role admin can renounce its admin role. This function provides a mechanism for accounts to lose their privileges
+    /// if they are compromised (such as when a trusted device is misplaced)
+    public entry fun renounce_role_admin(admin: &signer, role_name: vector<u8>) acquires RoleV2 {
+        let role_object_address = role_object_address(role_name);
+        assert!(exists<RoleV2>(role_object_address), ERR_MANAGER_ROLE_NOT_EXISTS);
+        let role = borrow_global_mut<RoleV2>(role_object_address);
+        assert!(option::is_some(&role.admin), ERR_MANAGER_ROLE_ADMIN_NOT_EXISTS);
+        assert!(*option::borrow(&role.admin) == signer::address_of(admin), ERR_UNAUTHORIZED);
+        role.admin = option::none<address>();
+    }
+
+    /// Role admin and protocol manager can add a member to the role
+    public entry fun add_role_member(admin: &signer, role_name: vector<u8>, member: address) acquires Manager, RoleV2 {
+        assert!(is_role_admin(signer::address_of(admin), role_name), ERR_UNAUTHORIZED);
+        assert!(exists<RoleV2>(role_object_address(role_name)), ERR_MANAGER_ROLE_NOT_EXISTS);
+        if (!is_role_member(member, role_name)) {
+            let role = borrow_global_mut<RoleV2>(role_object_address(role_name));
+            smart_vector::push_back(&mut role.members, member);
+        }
+    }
+
+    /// Role admin and protocol manager can remove a member from the role
+    public entry fun remove_role_member(admin: &signer, role_name: vector<u8>, member: address) acquires Manager, RoleV2 {
+        assert!(is_role_admin(signer::address_of(admin), role_name), ERR_UNAUTHORIZED);
+        assert!(exists<RoleV2>(role_object_address(role_name)), ERR_MANAGER_ROLE_NOT_EXISTS);
+        let role = borrow_global_mut<RoleV2>(role_object_address(role_name));
+        let members = &mut role.members;
+        let (found, index) = smart_vector::index_of(members, &member);
+        if (found) {
+            smart_vector::swap_remove(members, index);
+        }
+    }
 
     ///
     /// Functions
@@ -172,6 +255,80 @@ module thala_manager::manager {
     public fun manager_address(): address acquires Manager {
         borrow_global<Manager>(package::resource_account_address()).manager_address
     }
+
+    #[view]
+    /// Check if an account can manage membership of a role
+    /// Thala protocol manager can always manage membership of any role
+    public fun is_role_admin(account: address, role_name: vector<u8>): bool acquires Manager, RoleV2 {
+        if (is_authorized_address(account)) {
+            return true
+        };
+        let role_object_address = role_object_address(role_name);
+        if (!exists<RoleV2>(role_object_address)) {
+            return false
+        };
+        let role = borrow_global<RoleV2>(role_object_address);
+        option::is_some(&role.admin) && *option::borrow(&role.admin) == account
+    }
+
+    #[view]
+    public fun is_role_member(account: address, role_name: vector<u8>): bool acquires RoleV2 {
+        let role_object_address = role_object_address(role_name);
+        if (exists<RoleV2>(role_object_address)) {
+            let role = borrow_global<RoleV2>(role_object_address);
+            smart_vector::contains(&role.members, &account)
+        }
+        else {
+            false
+        }
+    }
+
+    #[view]
+    /// Get all role members
+    /// Disclaimer: This function may be costly. Use it at your own discretion.
+    public fun role_members(role_name: vector<u8>): vector<address> acquires RoleV2 {
+        let role_object_address = role_object_address(role_name);
+        if (!exists<RoleV2>(role_object_address)) {
+            return vector::empty()
+        };
+        let role = borrow_global<RoleV2>(role_object_address);
+        let result = vector::empty<address>();
+        let i = 0;
+        let n = smart_vector::length(&role.members);
+        while (i < n) {
+            vector::push_back(&mut result, *smart_vector::borrow(&role.members, i));
+            i = i + 1;
+        };
+        result
+    }
+
+    #[view]
+    public fun role_admin(role_name: vector<u8>): Option<address> acquires RoleV2 {
+        let role_object_address = role_object_address(role_name);
+        if (!exists<RoleV2>(role_object_address)) {
+            return option::none<address>()
+        };
+        let role = borrow_global<RoleV2>(role_object_address);
+        role.admin
+    }
+
+    #[view]
+    /// Deterministically generate the address of a role object given the role name
+    /// "V2" is appended to the role name internally to differentiate from the previous version
+    public fun role_object_address(role_name: vector<u8>): address {
+        object::create_object_address(&package::resource_account_address(), role_name_v2(role_name))
+    }
+
+    // Internal Functions
+
+    inline fun role_name_v2(role_name: vector<u8>): vector<u8> {
+        vector::append(&mut role_name, b"_V2");
+        role_name
+    }
+
+    //
+    // Tests
+    //
 
     #[test_only]
     public fun initialize_for_test(manager_address: address) {
@@ -315,5 +472,90 @@ module thala_manager::manager {
         accept_manager_proposal(&accountB);
 
         change_manager_address(&accountA, @0xB);
+    }
+    
+    #[test]
+    fun manager_set_members_ok() acquires Manager, RoleV2 {
+        // prepare
+        let manager = account::create_account_for_test(@0xA);
+        initialize_for_test(@0xA);
+        let role_name = b"test_role";
+        let incorrect_name = b"incorrect_name";
+
+        // test
+        assert!(!is_role_member(@0xB, role_name), 0);
+        assert!(!is_role_member(@0xB, incorrect_name), 0);
+
+        let members = role_members(role_name);
+        assert!(vector::length(&members) == 0, 0);
+
+        create_role(&manager, role_name, option::none<address>());
+        add_role_member(&manager, role_name, @0xB);
+        assert!(is_role_member(@0xB, role_name), 0);
+
+        let members = role_members(role_name);
+        assert!(vector::length(&members) == 1, 0);
+        assert!(*vector::borrow(&members, 0) == @0xB, 0);
+
+        remove_role_member(&manager, role_name, @0xB);
+        assert!(!is_role_member(@0xB, role_name), 0);
+        
+        let members = role_members(role_name);
+        assert!(vector::length(&members) == 0, 0);
+    }
+    
+    #[test]
+    #[expected_failure(abort_code = ERR_MANAGER_ROLE_EXISTS)]
+    fun create_role_twice_err() acquires Manager {
+        // prepare
+        let manager = account::create_account_for_test(@0xA);
+        initialize_for_test(@0xA);
+        let role_name = b"test_role";
+
+        create_role(&manager, role_name, option::none<address>());
+        create_role(&manager, role_name, option::none<address>());
+    }
+
+    #[test]
+    fun role_admin_managerment_ok() acquires Manager, RoleV2 {
+        // prepare
+        let manager = account::create_account_for_test(@0xA);
+        let admin = account::create_account_for_test(@0xB);
+        initialize_for_test(@0xA);
+
+        let role_name = b"test_role";
+        create_role(&manager, role_name, option::some<address>(@0xB));
+        
+        // test: role admin is set correctly
+        assert!(is_role_admin(@0xB, role_name), 0);
+        assert!(role_admin(role_name) == option::some<address>(@0xB), 0);
+
+        // test: admin can add and remove members
+        add_role_member(&admin, role_name, @0xC);
+        assert!(is_role_member(@0xC, role_name), 0);
+
+        remove_role_member(&admin, role_name, @0xC);
+        assert!(!is_role_member(@0xC, role_name), 0);
+
+        // test: manager can remove admin
+        set_role_admin(&manager, role_name, option::none<address>());
+        assert!(!is_role_admin(@0xB, role_name), 0);
+        assert!(role_admin(role_name) == option::none<address>(), 0);
+    }
+
+    #[test]
+    fun renounce_role_admin_ok() acquires Manager, RoleV2 {
+        // prepare
+        let manager = account::create_account_for_test(@0xA);
+        let admin = account::create_account_for_test(@0xB);
+        initialize_for_test(@0xA);
+
+        let role_name = b"test_role";
+        create_role(&manager, role_name, option::some<address>(@0xB));
+
+        // test: admin can renounce
+        renounce_role_admin(&admin, role_name);
+        assert!(!is_role_admin(@0xB, role_name), 0);
+        assert!(role_admin(role_name) == option::none<address>(), 0);
     }
 }

@@ -1,4 +1,6 @@
 module thalaswap::fees {
+    use std::signer;
+    
     use aptos_framework::coin::{Self, Coin};
 
     use thalaswap::package;
@@ -7,6 +9,8 @@ module thalaswap::fees {
 
     friend thalaswap::weighted_pool;
     friend thalaswap::stable_pool;
+
+    const FEE_MANAGER_ROLE: vector<u8> = b"fee_manager";
 
     ///
     /// Error Codes
@@ -26,9 +30,8 @@ module thalaswap::fees {
     }
 
     public fun withdraw_fee<CoinType>(manager: &signer, amount: u64): Coin<CoinType> {
-        assert!(manager::is_authorized(manager), ERR_UNAUTHORIZED);
+        assert!(manager::is_authorized(manager) || manager::is_role_member(signer::address_of(manager), FEE_MANAGER_ROLE), ERR_UNAUTHORIZED);
 
-        try_register<CoinType>();
         coin::withdraw<CoinType>(&package::resource_account_signer(), amount)
     }
 
@@ -46,7 +49,7 @@ module thalaswap::fees {
     }
 
     #[test_only]
-    use thalaswap::coin_test;
+    use test_utils::coin_test;
 
     #[test_only]
     struct FakeCoin {}
@@ -63,7 +66,7 @@ module thalaswap::fees {
     #[test_only]
     fun absorb_fee_ok<CoinType>(manager: &signer) {
         initialize_for_test<FakeCoin>(manager);
-        absorb_fee(thalaswap::coin_test::mint_coin<FakeCoin>(manager, 1));
+        absorb_fee(coin_test::mint_coin<FakeCoin>(manager, 1));
 
         assert!(balance<FakeCoin>() == 1, 0);
     }

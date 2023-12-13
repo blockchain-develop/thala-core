@@ -1,5 +1,6 @@
 module thalaswap_math::weighted_math {
     use std::vector;
+    use aptos_std::math64;
 
     use fixed_point64::fixed_point64::{Self, FixedPoint64};
     use fixed_point64::log_exp_math;
@@ -360,14 +361,7 @@ module thalaswap_math::weighted_math {
     ///
     /// Returns `u64` (return amount).
     public fun compute_asset_amount_to_return(balance: u64, p_redeemed: u64, p_supply: u64): u64 {
-        // calculate the larger one of "p_redeemed" and "b_k" divided by "p_supply" first for better accuracy
-        let amount = if (balance > p_redeemed) {
-            fixed_point64::mul(fixed_point64::fraction(balance, p_supply), p_redeemed)
-        } else {
-            fixed_point64::mul(fixed_point64::fraction(p_redeemed, p_supply), balance)
-        };
-
-        fixed_point64::decode_round_down(amount)
+        math64::mul_div(p_redeemed, balance, p_supply)
     }
 
     #[test]

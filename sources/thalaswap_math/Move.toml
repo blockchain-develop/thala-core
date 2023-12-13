@@ -1,0 +1,19 @@
+[package]
+name = "ThalaSwapMath"
+version = "1.0.0"
+
+[addresses]
+thalaswap_math = "fb6e709add23c710c40e4844d889938f703719f72d2d4439ee682d67f07a15c5"
+thalaswap_math_deployer = "1bf23f0881f8fa149500ff6b7a047f608967c028a8ad7a2100caa84833ce851d"
+
+[dependencies.FixedPoint64]
+git = "https://github.com/ThalaLabs/fixed_point64.git"
+rev = "main"
+
+[dependencies.MoveStdlib]
+git = "https://github.com/aptos-labs/aptos-core.git"
+subdir = "aptos-move/framework/move-stdlib"
+rev = "mainnet"
+
+[dependencies.ThalaManager]
+local = "../thala_manager/"

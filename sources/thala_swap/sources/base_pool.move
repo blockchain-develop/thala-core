@@ -176,7 +176,7 @@ module thalaswap::base_pool {
     struct FakeCoin_D {}
     
     #[test_only]
-    use thalaswap::coin_test;
+    use test_utils::coin_test;
 
     #[test(manager = @thalaswap)]
     fun validate_pool_assets_ok(manager: &signer) {
